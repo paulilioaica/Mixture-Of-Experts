@@ -1,4 +1,4 @@
-from expert import FeedForwardExpert
+from src.expert import FeedForwardExpert
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
