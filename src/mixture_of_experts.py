@@ -1,5 +1,4 @@
 from expert import FeedForwardExpert
-from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -84,6 +83,9 @@ class FeedForward(nn.Module):
 
 
     def forward(self, x):
+        batch_size = x.shape[0]
+        seq_len = x.shape[1]
+
         gate_output = self.gate(x)
 
         # get probabilities for each expert
@@ -95,18 +97,18 @@ class FeedForward(nn.Module):
         # re-normalize probabilities for top k experts
         top_k_experts_weights = top_k_experts / torch.sum(top_k_experts, dim=-1, keepdim=True)
 
-        # iterate over top k experts
-        expert_outputs = []
-        
-        for i in range(self.top_k):
-            curent_expert_output = self.experts[expert_indices[0]](x)
-            expert_outputs.append(curent_expert_output)
-        
-        # weighted sum of expert outputs   
-        output = torch.stack(expert_outputs, dim=-1) * top_k_experts_weights
-        output = torch.sum(output, dim=-1)
+        # place holder for output
+        expert_outputs = torch.zeros_like(x)
 
-        return output
+        for batch in range(batch_size):
+            for tok_pos in range(seq_len):
+                for k in range(self.top_k):
+                    expert_index = expert_indices[batch, tok_pos, k].item()
+                    curent_expert_output = self.experts[expert_index](x[batch, tok_pos])
+                    expert_outputs[batch, tok_pos] = curent_expert_output * top_k_experts_weights[batch, tok_pos, k]
+        
+
+        return expert_outputs
 
 
 class TransformerDecoder(nn.Module):
