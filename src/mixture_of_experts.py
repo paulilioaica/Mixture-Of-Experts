@@ -73,7 +73,6 @@ class MultiHeadAttention(nn.Module):
         return output  
 
 
-# Feed forward definition
 class FeedForward(nn.Module):
     def __init__(self, hidden_dim, num_of_experts, top_k) -> None:
         super().__init__()
@@ -92,10 +91,10 @@ class FeedForward(nn.Module):
         gate_output = F.softmax(gate_output, dim=-1)
         
         # get top k experts
-        top_k_experts, expert_indices = torch.topk(gate_output, self.top_k, dim=-1)
+        top_k_experts_weights, top_k_expert_indices = torch.topk(gate_output, self.top_k, dim=-1)
 
         # re-normalize probabilities for top k experts
-        top_k_experts_weights = top_k_experts / torch.sum(top_k_experts, dim=-1, keepdim=True)
+        top_k_experts_weights = top_k_experts_weights / torch.sum(top_k_experts_weights, dim=-1, keepdim=True)
 
         # place holder for output
         expert_outputs = torch.zeros_like(x)
@@ -103,13 +102,64 @@ class FeedForward(nn.Module):
         for batch in range(batch_size):
             for tok_pos in range(seq_len):
                 for k in range(self.top_k):
-                    expert_index = expert_indices[batch, tok_pos, k].item()
+                    expert_index = top_k_expert_indices[batch, tok_pos, k].item()
                     curent_expert_output = self.experts[expert_index](x[batch, tok_pos])
                     expert_outputs[batch, tok_pos] = curent_expert_output * top_k_experts_weights[batch, tok_pos, k]
         
 
         return expert_outputs
 
+
+class SparseFeedForward(nn.Module):
+    def __init__(self, hidden_dim, num_of_experts, top_k) -> None:
+        super().__init__()
+        self.top_k = top_k
+        self.num_of_experts = num_of_experts
+        self.experts = nn.Linear(hidden_dim, num_of_experts * hidden_dim)
+        self.gate = nn.Linear(hidden_dim, num_of_experts)
+
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        seq_len = x.shape[1]
+        hidden_size = x.shape[2]
+
+        gate_output = self.gate(x)
+
+        # get probabilities for each expert
+        gate_output = F.softmax(gate_output, dim=-1)
+        
+        # get top k experts
+        top_k_experts_weights, top_k_expert_indices = torch.topk(gate_output, self.top_k, dim=-1)
+
+        # re-normalize probabilities for top k experts
+        top_k_experts_weights = top_k_experts_weights / torch.sum(top_k_experts_weights, dim=-1, keepdim=True)
+
+        #a matrix of size [batch_size, seq_len, hidden_size, num_of_experts]
+        experts_opinion = self.experts(x)
+
+        experts_opinion = experts_opinion.view(batch_size, seq_len, hidden_size, self.num_of_experts)
+
+        #we will turn the weight vector into a sparse one
+        weights_sparse = torch.zeros_like(gate_output)
+
+        # set the weights on the top k experts vectorized
+        weights_sparse = weights_sparse.scatter_(dim=-1, index=top_k_expert_indices, src=top_k_experts_weights)
+
+        # add hidden dim to the weights
+        weights_sparse = weights_sparse.unsqueeze(-2)
+
+        # expand the weights to the hidden dim
+        weights_sparse = weights_sparse.expand(-1, -1, hidden_size, -1)
+
+        # multiply the weights by the experts opinion
+        experts_opinion_weighted = experts_opinion * weights_sparse
+
+        # sum the experts opinion
+        sum_of_experts = experts_opinion_weighted.sum(dim=-1)
+        
+
+        return sum_of_experts
 
 class TransformerDecoder(nn.Module):
     def __init__(self, num_layers, n_heads, seq_len, num_hidden) -> None:
